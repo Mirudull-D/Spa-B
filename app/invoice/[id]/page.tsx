@@ -1,4 +1,5 @@
 import { dbStore } from "@/lib/dbStore";
+import { isGstExclusive } from "@/lib/gst";
 import { ArrowLeft, FileText } from "lucide-react";
 import Link from "next/link";
 import { InvoiceActions } from "./InvoiceActions";
@@ -141,6 +142,17 @@ export default async function InvoicePage({
         ? "GPay"
         : "Cash";
 
+  // Bills saved before the switch to GST-exclusive pricing keep their inclusive layout.
+  const gstOnTop = isGstExclusive({
+    isGst: order.is_gst,
+    subtotal: subtotalNum,
+    discount: discountNum,
+    gstAmount: gstAmountNum,
+    deliveryFee: deliveryFeeNum,
+    grandTotal: grandTotalNum,
+  });
+  const gstTag = gstOnTop || gstAmountNum === 0 ? "excl. GST" : "incl. GST";
+
   const halfGstRate = order.gst_percentage ? order.gst_percentage / 2 : 9;
   const halfGstAmount = gstAmountNum > 0 ? gstAmountNum / 2 : 0;
 
@@ -168,16 +180,8 @@ export default async function InvoicePage({
       <style>{`
         @media print {
           @page {
-            size: ${
-              paper === "thermal"
-                ? size === "58"
-                  ? "58mm auto"
-                  : "80mm auto"
-                : size === "a5"
-                  ? "A5 portrait"
-                  : "A4 portrait"
-            };
-            margin: ${paper === "thermal" ? "3mm" : size === "a5" ? "10mm" : "12mm"};
+            ${paper !== "thermal" ? `size: ${size === "a5" ? "A5 portrait" : "A4 portrait"};` : ""}
+            margin: ${paper === "thermal" ? "0mm" : size === "a5" ? "10mm" : "12mm"};
           }
           html, body {
             background: #ffffff !important;
@@ -215,7 +219,7 @@ export default async function InvoicePage({
       )}
 
       {paper === "thermal" ? (
-        <div className={`invoice-sheet bg-white mx-auto text-black font-mono leading-tight p-3 ${size === "58" ? "w-[260px]" : "w-[320px]"}`}>
+        <div className={`invoice-sheet bg-white text-black font-mono leading-tight p-3 sm:mx-auto print:mx-0 print:ml-0 print:mt-0 print:w-full print:max-w-full ${size === "58" ? "w-[260px]" : "w-[320px]"}`} style={{ width: paper === "thermal" ? (size === "58" ? "58mm" : "80mm") : undefined }}>
           {/* Thermal Receipt Layout */}
           <div className="text-center pb-3 border-b border-dashed border-black/40 mb-3">
             <h1 className="text-xl font-bold tracking-tight">SS CREATIVES</h1>
@@ -394,10 +398,10 @@ export default async function InvoicePage({
                 {order.is_gst && <th className="pb-3 text-center w-16">HSN</th>}
                 <th className="pb-3 text-center w-12">Qty</th>
                 <th className="pb-3 text-right w-24">
-                  Rate (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
+                  Rate (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">{gstTag}</span>}
                 </th>
                 <th className="pb-3 text-right w-28">
-                  Amount (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">incl. GST</span>}
+                  Amount (₹){order.is_gst && <span className="block text-[8px] font-normal normal-case tracking-normal text-zinc-400">{gstTag}</span>}
                 </th>
               </tr>
             </thead>
@@ -515,7 +519,7 @@ export default async function InvoicePage({
                 Subtotal
                 {order.is_gst && (
                   <span className="text-[9px] font-semibold text-zinc-400 uppercase ml-1">
-                    incl. GST
+                    {gstTag}
                   </span>
                 )}
               </span>
@@ -538,7 +542,7 @@ export default async function InvoicePage({
             {order.is_gst && gstAmountNum > 0 && (
               <>
                 <div className="pt-1 mt-1 border-t border-dashed border-zinc-200 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">
-                  GST (included above)
+                  {gstOnTop ? "GST (added)" : "GST (included above)"}
                 </div>
                 <div className="flex justify-between text-zinc-600">
                   <span>CGST ({halfGstRate.toFixed(1)}%)</span>

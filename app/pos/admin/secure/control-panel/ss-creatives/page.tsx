@@ -75,6 +75,7 @@ import {
   setAdvanceOrderStatus,
 } from "@/app/pos/actions";
 import { Product, Expense, Category, AdvanceOrderWithRelations, AdvanceOrderStatus } from "@/lib/types";
+import { calcGst, isGstExclusive, netSales } from "@/lib/gst";
 
 // Preset expense categories (users can also type a custom one)
 const EXPENSE_CATEGORIES = [
@@ -1012,19 +1013,16 @@ export default function POSBilling() {
     setCatalog((prev) => prev.filter((c) => c.id !== id));
   };
 
-  // Product prices are GST-inclusive. Subtotal already contains GST; we back-derive
-  // the GST portion for display and never add it on top of the grand total.
+  // Product prices are GST-exclusive. GST is calculated on (subtotal - discount)
+  // and added on top of the grand total.
   const subtotal = items.reduce((acc, item) => acc + item.price * item.qty, 0);
   const calculatedDiscount =
     discountType === "percent"
       ? subtotal * (discountValue / 100)
       : discountValue;
-  const netInclusive = Math.max(0, subtotal - calculatedDiscount);
-  const gstAmount =
-    applyGST && gstPercentage > 0
-      ? netInclusive - netInclusive / (1 + gstPercentage / 100)
-      : 0;
-  const grandTotal = netInclusive + deliveryFee;
+  const netExclusive = Math.max(0, subtotal - calculatedDiscount);
+  const gstAmount = applyGST ? calcGst(netExclusive, gstPercentage) : 0;
+  const grandTotal = netExclusive + gstAmount + deliveryFee;
 
   // Suggest a GST % from the products currently in the cart (their per-product
   // default rate). Used to pre-fill the changeable GST field when a GST invoice
@@ -1092,7 +1090,10 @@ export default function POSBilling() {
       alert("Deposit amount must be greater than 0.");
       return;
     }
-    if (deposit > grandTotal) {
+    // GST is chosen when the balance is collected (see finalizeAdvanceOrder), so the
+    // advance total is the pre-GST amount.
+    const advanceTotal = netExclusive + deliveryFee;
+    if (deposit > advanceTotal) {
       alert("Deposit cannot exceed the grand total. Use 'Complete Sale' for full payment.");
       return;
     }
@@ -1106,7 +1107,7 @@ export default function POSBilling() {
         customerPhone,
         customerAddress: customerAddress || null,
         subtotal,
-        totalAmount: grandTotal,
+        totalAmount: advanceTotal,
         depositAmount: deposit,
         depositPaymentMode: advDepositPaymentMode,
         deliveryDate: advDeliveryDate || null,
@@ -1142,9 +1143,9 @@ export default function POSBilling() {
         id: advId,
         customerName: receiptCustomerName,
         customerPhone: receiptCustomerPhone,
-        total: grandTotal,
+        total: advanceTotal,
         deposit,
-        balance: Math.max(0, grandTotal - deposit),
+        balance: Math.max(0, advanceTotal - deposit),
       });
     } catch (err) {
       console.error("Failed to save advance order:", err);
@@ -1336,13 +1337,10 @@ export default function POSBilling() {
       discountType === "percent"
         ? localSubtotal * (discountValue / 100)
         : discountValue;
-    // Prices are GST-inclusive: derive GST from subtotal instead of adding on top.
-    const localNetInclusive = Math.max(0, localSubtotal - localCalculatedDiscount);
-    const localGstAmount =
-      applyGST && gstPercentage > 0
-        ? localNetInclusive - localNetInclusive / (1 + gstPercentage / 100)
-        : 0;
-    const localGrandTotal = localNetInclusive + deliveryFee;
+    // Prices are GST-exclusive: GST is added on top of (subtotal - discount).
+    const localNetExclusive = Math.max(0, localSubtotal - localCalculatedDiscount);
+    const localGstAmount = applyGST ? calcGst(localNetExclusive, gstPercentage) : 0;
+    const localGrandTotal = localNetExclusive + localGstAmount + deliveryFee;
 
     // Validate totals against PostgreSQL numeric(10,2) overflow limit (99,999,999.99)
     const MAX_LIMIT = 99999999.99;
@@ -1536,18 +1534,19 @@ export default function POSBilling() {
     let message = `${shopEmoji} *SS CREATIVES* ${shopEmoji}\n\n`;
     message += `${checkEmoji} Here are your ${order.isGst ? "GST invoice" : "bill"} details!\n\n`;
 
-    message += `Subtotal (incl. GST): ₹${order.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+    // Bills saved before the switch to GST-exclusive pricing keep their "incl." wording.
+    const gstOnTop = isGstExclusive(order);
+    message += `Subtotal${order.isGst ? (gstOnTop ? " (excl. GST)" : " (incl. GST)") : ""}: ₹${order.subtotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     if (order.discount > 0) {
       message += `Discount Applied: -₹${order.discount.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
 
-    // GST already sits inside the subtotal — surface it for the customer only.
-    const gstInsideBill = Number(order.gstAmount) || 0;
-    if (order.isGst && gstInsideBill > 0.1) {
+    const gstOnBill = Number(order.gstAmount) || 0;
+    if (order.isGst && gstOnBill > 0.1) {
       const gstLabel = order.gstPercentage
-        ? `GST (${order.gstPercentage}% incl.)`
-        : "GST (incl.)";
-      message += `${gstLabel}: ₹${gstInsideBill.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
+        ? `GST (${order.gstPercentage}%${gstOnTop ? "" : " incl."})`
+        : gstOnTop ? "GST" : "GST (incl.)";
+      message += `${gstLabel}: ₹${gstOnBill.toLocaleString(undefined, { minimumFractionDigits: 2 })}\n`;
     }
 
     if (order.deliveryFee > 0) {
@@ -1768,6 +1767,7 @@ export default function POSBilling() {
     totalOrdersCount,
     totalRevenueAmount,
     gstRevenue,
+    gstCollected,
     nonGstRevenue,
     gstOrdersCount,
     nonGstOrdersCount,
@@ -1863,7 +1863,7 @@ export default function POSBilling() {
 
     const totalOrdersCount = analyticsFilteredOrders.length;
     const totalRevenueAmount = analyticsFilteredOrders.reduce(
-      (acc, o) => acc + o.grandTotal,
+      (acc, o) => acc + netSales(o),
       0,
     );
     const avgOrderValue =
@@ -1871,11 +1871,13 @@ export default function POSBilling() {
 
     const gstOrders = analyticsFilteredOrders.filter((o) => o.isGst);
     const nonGstOrders = analyticsFilteredOrders.filter((o) => !o.isGst);
-    const gstRevenue = gstOrders.reduce((acc, o) => acc + o.grandTotal, 0);
+    const gstRevenue = gstOrders.reduce((acc, o) => acc + netSales(o), 0);
     const nonGstRevenue = nonGstOrders.reduce(
-      (acc, o) => acc + o.grandTotal,
+      (acc, o) => acc + netSales(o),
       0,
     );
+    // GST charged to customers on top of sales; owed to the government, not revenue.
+    const gstCollected = gstOrders.reduce((acc, o) => acc + (o.gstAmount ?? 0), 0);
     const gstOrdersCount = gstOrders.length;
     const nonGstOrdersCount = nonGstOrders.length;
 
@@ -1890,10 +1892,10 @@ export default function POSBilling() {
     // Split revenues
     const onlineRevenue = analyticsFilteredOrders
       .filter((o) => o.source === "ONLINE")
-      .reduce((acc, o) => acc + o.grandTotal, 0);
+      .reduce((acc, o) => acc + netSales(o), 0);
     const offlineRevenue = analyticsFilteredOrders
       .filter((o) => o.source === "OFFLINE")
-      .reduce((acc, o) => acc + o.grandTotal, 0);
+      .reduce((acc, o) => acc + netSales(o), 0);
 
     // Top items by revenue in analyticsFilteredOrders
     const itemSales: Record<
@@ -1962,7 +1964,7 @@ export default function POSBilling() {
         orderTime <= sundayOfThisWeek.getTime()
       ) {
         const day = (orderDate.getDay() + 6) % 7;
-        weekRevenue[day] += order.grandTotal;
+        weekRevenue[day] += netSales(order);
       }
     });
     const maxWeekRevenue = Math.max(...weekRevenue, 1);
@@ -1995,7 +1997,7 @@ export default function POSBilling() {
       }
       const d = new Date(order.date);
       if (d.getFullYear() === now.getFullYear()) {
-        monthRevenue[d.getMonth()] += order.grandTotal;
+        monthRevenue[d.getMonth()] += netSales(order);
       }
     });
     const maxMonthRevenue = Math.max(...monthRevenue, 1);
@@ -2021,7 +2023,7 @@ export default function POSBilling() {
       );
     });
 
-    const todayRevenue = todayOrders.reduce((acc, o) => acc + o.grandTotal, 0);
+    const todayRevenue = todayOrders.reduce((acc, o) => acc + netSales(o), 0);
 
     const todayOrdersCount = todayOrders.length;
     const todayOnlineOrdersCount = todayOrders.filter(
@@ -2033,10 +2035,10 @@ export default function POSBilling() {
 
     const todayOnlineRevenue = todayOrders
       .filter((o) => o.source === "ONLINE")
-      .reduce((acc, o) => acc + o.grandTotal, 0);
+      .reduce((acc, o) => acc + netSales(o), 0);
     const todayOfflineRevenue = todayOrders
       .filter((o) => o.source === "OFFLINE")
-      .reduce((acc, o) => acc + o.grandTotal, 0);
+      .reduce((acc, o) => acc + netSales(o), 0);
 
     const todayItemsSold = todayOrders.reduce(
       (acc, o) =>
@@ -2075,7 +2077,7 @@ export default function POSBilling() {
           d.getFullYear() === now.getFullYear()
         );
       })
-      .reduce((acc, o) => acc + o.grandTotal, 0);
+      .reduce((acc, o) => acc + netSales(o), 0);
 
     const totalItemsSold = analyticsFilteredOrders.reduce(
       (acc, o) =>
@@ -2106,6 +2108,7 @@ export default function POSBilling() {
       totalOrdersCount,
       totalRevenueAmount,
       gstRevenue,
+      gstCollected,
       nonGstRevenue,
       gstOrdersCount,
       nonGstOrdersCount,
@@ -2393,6 +2396,7 @@ export default function POSBilling() {
       "Source        ",
       "Subtotal      ",
       "Discount      ",
+      "GST Amount    ",
       "Delivery Fee  ",
       "Grand Total   ",
       "Status        ",
@@ -2430,6 +2434,7 @@ export default function POSBilling() {
         o.source,
         o.subtotal,
         o.discount,
+        o.gstAmount ?? 0,
         o.deliveryFee,
         o.grandTotal,
         o.status,
@@ -3795,7 +3800,7 @@ export default function POSBilling() {
                             {items
                               .filter((i) => i.name)
                               .reduce((sum, i) => sum + i.qty, 0)}{" "}
-                            items) <span className="text-[9px] font-bold text-[#7C5A52] uppercase">incl. GST</span>
+                            items) <span className="text-[9px] font-bold text-[#7C5A52] uppercase">excl. GST</span>
                           </span>
                           <span className="font-bold text-[#000000]">
                             ₹
@@ -3840,7 +3845,7 @@ export default function POSBilling() {
                           {applyGST && (
                             <div className="flex justify-between items-center">
                               <span className="text-xs font-bold text-[#000000] uppercase tracking-wider">
-                                GST <span className="text-[9px] font-bold text-[#7C5A52]">(incl.)</span>
+                                GST <span className="text-[9px] font-bold text-[#7C5A52]">(added)</span>
                               </span>
                               <div className="flex items-center gap-2">
                                 <div className="flex items-center gap-1">
@@ -4082,7 +4087,7 @@ export default function POSBilling() {
                 <div className="bg-[#FEF3C7] border border-[#F59E0B]/40 rounded-lg p-3">
                   <div className="flex justify-between text-[10px] font-bold text-[#78350F] uppercase tracking-wider">
                     <span>Order Total</span>
-                    <span>₹{grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span>₹{(netExclusive + deliveryFee).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
                 </div>
 
@@ -4099,7 +4104,7 @@ export default function POSBilling() {
                   />
                   {typeof advDeposit === "number" && advDeposit > 0 && (
                     <p className="mt-1.5 text-[10px] font-bold text-[#7C5A52]">
-                      Balance due: ₹{Math.max(0, grandTotal - Number(advDeposit)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      Balance due: ₹{Math.max(0, netExclusive + deliveryFee - Number(advDeposit)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </p>
                   )}
                 </div>
@@ -5416,7 +5421,8 @@ export default function POSBilling() {
                           })}
                         </div>
                         <div className="text-[9px] text-[#000000] font-semibold mt-1">
-                          {gstOrdersCount} GST invoices
+                          {gstOrdersCount} GST invoices · GST collected ₹
+                          {gstCollected.toLocaleString("en-IN", { minimumFractionDigits: 2 })} (not in sales)
                         </div>
                       </div>
 
@@ -5522,7 +5528,7 @@ export default function POSBilling() {
                   <div className="bg-white border border-black/10 rounded-xl p-4 shadow-sm hover:shadow-md transition-all">
                     <div className="flex justify-between items-start mb-3">
                       <span className="text-[10px] font-bold uppercase tracking-wider text-[#000000]">
-                        Total Revenue
+                        Total Revenue (excl. GST)
                       </span>
                       <div className="w-6 h-6 rounded-full bg-[#10B981]/10 flex items-center justify-center">
                         <IndianRupee className="w-3 h-3 text-[#10B981] animate-pulse" />
@@ -7083,7 +7089,8 @@ export default function POSBilling() {
                   {(selectedOrder.gstAmount ?? 0) > 0 && (
                     <div className="flex justify-between text-sm">
                       <span className="text-[#000000] font-semibold">
-                        GST ({selectedOrder.gstPercentage ?? 0}%)
+                        GST ({selectedOrder.gstPercentage ?? 0}%
+                        {isGstExclusive(selectedOrder) ? "" : ", incl. in subtotal"})
                       </span>
                       <span className="text-[#000000] font-bold">
                         ₹{(selectedOrder.gstAmount ?? 0).toLocaleString()}

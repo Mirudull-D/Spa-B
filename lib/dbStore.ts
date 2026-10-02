@@ -1,4 +1,5 @@
 import { sql } from './db';
+import { calcGst } from './gst';
 import {
   Product,
   Category,
@@ -262,9 +263,10 @@ export const dbStore = {
       quantity: item.qty,
     }));
 
-    // Subtotal is GST-inclusive (sum of line prices × qty).
-    // grand_total = subtotal - discount + delivery  (GST is embedded in subtotal).
-    const subtotalInclusive = payload.grandTotal + payload.discountAmount - payload.deliveryFee;
+    // Subtotal is GST-exclusive (sum of line prices × qty).
+    // grand_total = subtotal - discount + gst + delivery  (GST is added on top).
+    const subtotalExclusive =
+      payload.grandTotal + payload.discountAmount - payload.deliveryFee - payload.gstAmount;
 
     await sql`
       INSERT INTO orders (
@@ -273,7 +275,7 @@ export const dbStore = {
         cash_received, split_cash, split_gpay, payment_mode, bill_date, created_at
       ) VALUES (
         ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
-        ${subtotalInclusive},
+        ${subtotalExclusive},
         ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
         ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
         ${payload.grandTotal}, ${payload.cashReceived},
@@ -435,14 +437,11 @@ export const dbStore = {
       qty: it.quantity,
     }));
 
-    // Grand total math mirrors POSBilling.completeSale (GST-inclusive subtotal).
+    // Grand total math mirrors POSBilling.completeSale (GST added on top of the net amount).
     const rawSubtotal = cart.reduce((acc, i) => acc + i.price * i.qty, 0);
-    const netInclusive = Math.max(0, rawSubtotal - payload.discountAmount);
-    const gstAmount =
-      payload.isGst && payload.gstPercentage > 0
-        ? netInclusive - netInclusive / (1 + payload.gstPercentage / 100)
-        : 0;
-    const grandTotal = netInclusive + payload.deliveryFee;
+    const netExclusive = Math.max(0, rawSubtotal - payload.discountAmount);
+    const gstAmount = payload.isGst ? calcGst(netExclusive, payload.gstPercentage) : 0;
+    const grandTotal = netExclusive + gstAmount + payload.deliveryFee;
 
     const { orderId } = await this.submitOrder({
       orderId: payload.invoiceId,

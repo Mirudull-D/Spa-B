@@ -9,7 +9,7 @@ A PWA-enabled Point of Sale (POS), billing, and inventory management system for 
 - Add custom items with price and quantity controls
 - Manual discounts (fixed ₹ or percent %)
 - **GST Invoice / Non-GST Bill toggle** at the point of billing
-- **Changeable GST %** — pre-filled from each product's default GST rate, editable per sale
+- **Changeable GST %** — pre-filled from each product's default GST rate, editable per sale. Prices are **GST-exclusive**: GST is added on top of (subtotal − discount)
 - Optional delivery fee
 - Cash payment tracking with auto-calculated change return
 - Backdate support (custom / past bill dates)
@@ -33,6 +33,7 @@ A PWA-enabled Point of Sale (POS), billing, and inventory management system for 
 
 ### 📊 Analytics — GST & Non-GST Dashboards (Admin only)
 - Switch the whole dashboard between **All Bills / GST Invoices / Non-GST Bills**
+- Revenue is shown **excluding GST** (GST collected is reported separately)
 - KPIs: total revenue, completed bills, online/offline split, items sold, avg order value
 - Today's Sales, monthly & weekly revenue trends
 - Product sales leaderboard with market share
