@@ -448,7 +448,7 @@ export default async function InvoicePage({
 
         {/* Totals & Breakdown */}
         <div className="border-t border-zinc-200 pt-4 flex flex-col sm:flex-row justify-between items-start gap-8 text-xs">
-          {/* Left Side: Amount in Words, Bank / UPI & Terms */}
+          {/* Left Side: Amount in Words & payment details */}
           <div className="space-y-4 max-w-sm">
             <div>
               <div className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-0.5">
@@ -503,13 +503,6 @@ export default async function InvoicePage({
                 )}
               </div>
             )}
-
-            {/* Simple Terms */}
-            <div className="text-[11px] text-zinc-500 leading-relaxed pt-2">
-              <p className="font-medium text-zinc-700 mb-0.5">Terms & Notes:</p>
-              <p>• Goods once sold can only be exchanged within 7 days with this invoice.</p>
-              <p>• Custom-stitched and altered garments are made to order and are non-returnable.</p>
-            </div>
           </div>
 
           {/* Right Side: Financial Breakdown */}

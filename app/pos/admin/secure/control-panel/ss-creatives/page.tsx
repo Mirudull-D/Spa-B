@@ -62,6 +62,7 @@ import {
   removeProduct,
   fetchExpenses,
   createExpense,
+  editExpense,
   removeExpense,
   fetchCategories,
   createCategory,
@@ -470,6 +471,7 @@ export default function POSBilling() {
     new Date().toISOString().split("T")[0],
   );
   const [isSavingExpense, setIsSavingExpense] = useState(false);
+  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
   const [expensePeriod, setExpensePeriod] = useState<
     "all" | "today" | "week" | "month" | "year" | "custom"
   >("month");
@@ -1023,6 +1025,9 @@ export default function POSBilling() {
   const netExclusive = Math.max(0, subtotal - calculatedDiscount);
   const gstAmount = applyGST ? calcGst(netExclusive, gstPercentage) : 0;
   const grandTotal = netExclusive + gstAmount + deliveryFee;
+  // Advance orders are booked at the discounted price (pre-GST). The discount is
+  // recoverable later as `subtotal - total_amount` and lands on the final invoice.
+  const advanceBookingTotal = netExclusive + deliveryFee;
 
   // Suggest a GST % from the products currently in the cart (their per-product
   // default rate). Used to pre-fill the changeable GST field when a GST invoice
@@ -1091,8 +1096,8 @@ export default function POSBilling() {
       return;
     }
     // GST is chosen when the balance is collected (see finalizeAdvanceOrder), so the
-    // advance total is the pre-GST amount.
-    const advanceTotal = netExclusive + deliveryFee;
+    // advance total is the pre-GST amount, after any billing discount.
+    const advanceTotal = advanceBookingTotal;
     if (deposit > advanceTotal) {
       alert("Deposit cannot exceed the grand total. Use 'Complete Sale' for full payment.");
       return;
@@ -1136,9 +1141,9 @@ export default function POSBilling() {
       setSplitCash(0);
       setSplitGpay(0);
       setShowAdvanceSaveModal(false);
-      await fetchData();
 
-      // Show a shareable receipt modal (Print / WhatsApp / New Sale).
+      // Show a shareable receipt modal (Print / WhatsApp / New Sale) right away;
+      // the list refreshes in the background so the popup isn't held up by it.
       setAdvanceReceipt({
         id: advId,
         customerName: receiptCustomerName,
@@ -1147,6 +1152,7 @@ export default function POSBilling() {
         deposit,
         balance: Math.max(0, advanceTotal - deposit),
       });
+      void fetchData();
     } catch (err) {
       console.error("Failed to save advance order:", err);
       alert("Could not save the advance order. Please try again.");
@@ -1212,7 +1218,6 @@ export default function POSBilling() {
         billDate: new Date().toISOString(),
       });
       closeAdvanceDialog();
-      await fetchData();
 
       // Open the shared completion modal (Print / WhatsApp / New Sale) for the new invoice.
       try {
@@ -1258,6 +1263,9 @@ export default function POSBilling() {
       } catch (mapErr) {
         console.error("Could not open completion modal:", mapErr);
       }
+      // Server actions run one at a time, so refresh the lists only after the
+      // invoice modal is on screen.
+      void fetchData();
     } catch (err) {
       console.error("Failed to finalize advance order:", err);
       alert("Could not finalize the advance order. Please try again.");
@@ -1619,6 +1627,36 @@ export default function POSBilling() {
   };
 
   // ── Expense tracker: handlers ──────────────────────────────────────
+  const resetExpenseForm = () => {
+    setEditingExpenseId(null);
+    setExpTitle("");
+    setExpAmount("");
+    setExpNotes("");
+    setExpCustomCategory("");
+  };
+
+  const handleEditExpenseClick = (e: Expense) => {
+    setEditingExpenseId(e.id);
+    setExpTitle(e.title);
+    setExpAmount(Number(e.amount) || "");
+    // Use the local calendar date (same as the log displays), not the UTC slice.
+    const d = new Date(e.expense_date);
+    setExpDate(
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+    );
+    if ((EXPENSE_CATEGORIES as readonly string[]).includes(e.category)) {
+      setExpCategory(e.category);
+      setExpCustomCategory("");
+    } else {
+      setExpCategory("__custom__");
+      setExpCustomCategory(e.category);
+    }
+    setExpPaymentMode(e.payment_mode);
+    setExpNotes(e.notes || "");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  // Adds a new expense, or saves changes when one is being edited.
   const handleAddExpense = async () => {
     const amountNum =
       typeof expAmount === "number" ? expAmount : parseFloat(String(expAmount));
@@ -1633,16 +1671,31 @@ export default function POSBilling() {
       alert("Please enter a valid amount greater than 0.");
       return;
     }
+    const data = {
+      title: expTitle.trim(),
+      category,
+      amount: amountNum,
+      payment_mode: expPaymentMode,
+      notes: expNotes.trim() || null,
+      expense_date: expDate,
+    };
     setIsSavingExpense(true);
     try {
-      const created = await createExpense({
-        title: expTitle.trim(),
-        category,
-        amount: amountNum,
-        payment_mode: expPaymentMode,
-        notes: expNotes.trim() || null,
-        expense_date: expDate,
-      });
+      if (editingExpenseId) {
+        const updated = await editExpense(editingExpenseId, data);
+        if (updated) {
+          setExpenses((prev) =>
+            prev.map((x) =>
+              x.id === editingExpenseId
+                ? { ...updated, amount: Number(updated.amount) || 0 }
+                : x,
+            ),
+          );
+        }
+        resetExpenseForm();
+        return;
+      }
+      const created = await createExpense(data);
       setExpenses((prev) => [
         { ...created, amount: Number(created.amount) || 0 },
         ...prev,
@@ -1656,7 +1709,7 @@ export default function POSBilling() {
         setExpCustomCategory("");
       }
     } catch (err) {
-      console.error("Error adding expense:", err);
+      console.error("Error saving expense:", err);
       alert("Could not save the expense. Please try again.");
     } finally {
       setIsSavingExpense(false);
@@ -1668,6 +1721,7 @@ export default function POSBilling() {
     try {
       await removeExpense(id);
       setExpenses((prev) => prev.filter((e) => e.id !== id));
+      if (editingExpenseId === id) resetExpenseForm();
     } catch (err) {
       console.error("Error deleting expense:", err);
       alert("Could not delete the expense.");
@@ -4087,8 +4141,13 @@ export default function POSBilling() {
                 <div className="bg-[#FEF3C7] border border-[#F59E0B]/40 rounded-lg p-3">
                   <div className="flex justify-between text-[10px] font-bold text-[#78350F] uppercase tracking-wider">
                     <span>Order Total</span>
-                    <span>₹{(netExclusive + deliveryFee).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span>₹{advanceBookingTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                   </div>
+                  {calculatedDiscount > 0 && (
+                    <p className="mt-1.5 text-[10px] font-bold text-[#B45309] normal-case tracking-normal">
+                      Includes a discount of ₹{calculatedDiscount.toLocaleString(undefined, { minimumFractionDigits: 2 })}.
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -4104,7 +4163,7 @@ export default function POSBilling() {
                   />
                   {typeof advDeposit === "number" && advDeposit > 0 && (
                     <p className="mt-1.5 text-[10px] font-bold text-[#7C5A52]">
-                      Balance due: ₹{Math.max(0, netExclusive + deliveryFee - Number(advDeposit)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      Balance due: ₹{Math.max(0, advanceBookingTotal - Number(advDeposit)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </p>
                   )}
                 </div>
@@ -4213,6 +4272,12 @@ export default function POSBilling() {
                     <p className="text-sm font-black text-[#991B1B]">₹{balanceRemaining(selectedAdvance).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
                   </div>
                 </div>
+
+                {Number(selectedAdvance.subtotal) > Number(selectedAdvance.total_amount) && (
+                  <p className="text-[11px] font-bold text-[#B45309]">
+                    Discount: -₹{(Number(selectedAdvance.subtotal) - Number(selectedAdvance.total_amount)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </p>
+                )}
 
                 {selectedAdvance.delivery_date && (
                   <p className="text-[11px] font-bold text-[#7C5A52]"><Calendar className="w-3 h-3 inline mr-1" />Delivery: {new Date(selectedAdvance.delivery_date).toLocaleDateString()}</p>
@@ -4474,8 +4539,9 @@ export default function POSBilling() {
             </div>
 
             {/* Rows */}
-            <div className="bg-white border border-black/10 rounded-xl overflow-hidden">
-              <div className="hidden md:grid grid-cols-[1.1fr_1.3fr_1.5fr_1.5fr_0.9fr_1.1fr_1.4fr] gap-3 px-4 py-3 border-b border-black/10 text-[10px] font-black uppercase tracking-wider text-[#7C5A52] bg-[#F9FAFB]">
+            <div className="bg-white border border-black/10 rounded-xl overflow-x-auto">
+             <div className="md:min-w-[1060px]">
+              <div className="hidden md:grid grid-cols-[minmax(150px,1.2fr)_minmax(0,1.2fr)_minmax(0,1.5fr)_minmax(170px,1.4fr)_minmax(90px,0.8fr)_minmax(120px,1fr)_228px] gap-4 px-4 py-3 border-b border-black/10 text-[10px] font-black uppercase tracking-wider text-[#7C5A52] bg-[#F9FAFB] items-center">
                 <span>Deposit ID</span>
                 <span>Customer</span>
                 <span>Product</span>
@@ -4507,6 +4573,12 @@ export default function POSBilling() {
                 }
                 return filtered.map((a) => {
                   const bal = balanceRemaining(a);
+                  const finalInvoice = a.finalized_order_id
+                    ? orders.find((o) => o.id === a.finalized_order_id)
+                    : undefined;
+                  const advDiscount =
+                    finalInvoice?.discount ??
+                    Math.max(0, Number(a.subtotal) - Number(a.total_amount));
                   const statusStyles: Record<AdvanceOrderStatus, string> = {
                     PENDING: "bg-[#FEF3C7] text-[#78350F] border-[#F59E0B]/30",
                     READY: "bg-[#DBEAFE] text-[#1E3A8A] border-[#2563EB]/30",
@@ -4514,9 +4586,9 @@ export default function POSBilling() {
                     CANCELLED: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626]/30",
                   };
                   return (
-                    <div key={a.id} className="grid grid-cols-1 md:grid-cols-[1.1fr_1.3fr_1.5fr_1.5fr_0.9fr_1.1fr_1.4fr] gap-3 px-4 py-3 border-b border-black/5 items-center text-xs hover:bg-[#FAFAFA]">
+                    <div key={a.id} className="grid grid-cols-1 md:grid-cols-[minmax(150px,1.2fr)_minmax(0,1.2fr)_minmax(0,1.5fr)_minmax(170px,1.4fr)_minmax(90px,0.8fr)_minmax(120px,1fr)_228px] gap-4 px-4 py-4 border-b border-black/5 items-center text-xs hover:bg-[#FAFAFA]">
                       <div>
-                        <p className="font-mono font-black text-[11px] text-black">{a.id}</p>
+                        <p className="font-mono font-black text-[11px] text-black whitespace-nowrap">{a.id}</p>
                         <p className="text-[9px] font-bold text-[#7C5A52]">{new Date(a.created_at).toLocaleDateString()}</p>
                       </div>
                       <div>
@@ -4525,7 +4597,7 @@ export default function POSBilling() {
                       </div>
                       <div className="text-[11px]">
                         {a.items.slice(0, 2).map((i) => (
-                          <p key={i.id} className="font-bold text-black truncate">
+                          <p key={i.id} className="font-bold text-black break-words">
                             {i.quantity}× {i.snapshot_name}
                           </p>
                         ))}
@@ -4537,6 +4609,9 @@ export default function POSBilling() {
                         <p className="font-bold text-black">Total: ₹{Number(a.total_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
                         <p className="text-[#16A34A] font-bold">Paid: ₹{Number(a.deposit_amount).toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
                         <p className="text-[#DC2626] font-bold">Balance: ₹{bal.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                        {advDiscount > 0 && (
+                          <p className="text-[#B45309] font-bold">Discount: -₹{advDiscount.toLocaleString(undefined, { minimumFractionDigits: 2 })}</p>
+                        )}
                       </div>
                       <div className="text-[11px] font-bold text-[#7C5A52]">
                         {a.delivery_date ? new Date(a.delivery_date).toLocaleDateString() : "—"}
@@ -4601,6 +4676,7 @@ export default function POSBilling() {
                   );
                 });
               })()}
+             </div>
             </div>
           </div>
         )}
@@ -4858,6 +4934,14 @@ export default function POSBilling() {
                               </td>
                               <td className="p-4 text-sm font-black text-[#35617C]">
                                 ₹{order.grandTotal.toLocaleString()}
+                                {order.discount > 0 && (
+                                  <span className="block text-[10px] font-bold text-[#DC2626] whitespace-nowrap">
+                                    Discount: -₹{order.discount.toLocaleString()}
+                                    {order.discountType === "PERCENT" && order.discountValue
+                                      ? ` (${order.discountValue}%)`
+                                      : ""}
+                                  </span>
+                                )}
                               </td>
                               <td className="p-4 text-right">
                                 <div className="flex flex-row items-center justify-end gap-1.5">
@@ -6347,7 +6431,7 @@ export default function POSBilling() {
               <div className="lg:col-span-2 bg-white border border-black/10 rounded-2xl p-5 shadow-sm h-fit">
                 <h3 className="text-sm font-black text-[#000000] uppercase tracking-wider flex items-center gap-2 mb-4">
                   <span className="w-1.5 h-6 bg-[#35617C] rounded-full" />
-                  Add Expense
+                  {editingExpenseId ? "Edit Expense" : "Add Expense"}
                 </h3>
                 <div className="space-y-3">
                   <div>
@@ -6459,9 +6543,22 @@ export default function POSBilling() {
                     disabled={isSavingExpense}
                     className="w-full mt-1 bg-[#35617C] hover:bg-[#27272A] disabled:opacity-60 text-white py-3 rounded-lg font-black text-[11px] uppercase tracking-[0.1em] flex items-center justify-center gap-2 transition-transform active:scale-[0.98] shadow-sm cursor-pointer"
                   >
-                    <Plus className="w-4 h-4" />
-                    {isSavingExpense ? "Saving…" : "Add Expense"}
+                    {editingExpenseId ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+                    {isSavingExpense
+                      ? "Saving…"
+                      : editingExpenseId
+                        ? "Save Changes"
+                        : "Add Expense"}
                   </button>
+                  {editingExpenseId && (
+                    <button
+                      onClick={resetExpenseForm}
+                      disabled={isSavingExpense}
+                      className="w-full bg-white border border-black/15 hover:bg-black/5 text-[#000000] py-2.5 rounded-lg font-black text-[11px] uppercase tracking-[0.1em] cursor-pointer"
+                    >
+                      Cancel Edit
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -6635,13 +6732,24 @@ export default function POSBilling() {
                             })}
                           </td>
                           <td className="p-3 text-center">
-                            <button
-                              onClick={() => handleDeleteExpense(e.id)}
-                              title="Delete expense"
-                              className="inline-flex items-center justify-center w-8 h-8 bg-[#B91C1C]/10 hover:bg-[#B91C1C]/20 text-[#B91C1C] rounded-md transition-colors cursor-pointer"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                onClick={() => handleEditExpenseClick(e)}
+                                title="Edit expense"
+                                aria-label="Edit expense"
+                                className="inline-flex items-center justify-center w-8 h-8 bg-[#35617C]/10 hover:bg-[#35617C]/20 text-[#35617C] rounded-md transition-colors cursor-pointer"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteExpense(e.id)}
+                                title="Delete expense"
+                                aria-label="Delete expense"
+                                className="inline-flex items-center justify-center w-8 h-8 bg-[#B91C1C]/10 hover:bg-[#B91C1C]/20 text-[#B91C1C] rounded-md transition-colors cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}

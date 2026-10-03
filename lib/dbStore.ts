@@ -24,6 +24,67 @@ const uid = () => {
   return `id-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
+
+type OrderPayload = {
+  orderId: string;
+  customerName: string;
+  customerPhone: string;
+  customerAddress?: string | null;
+  source: 'ONLINE' | 'OFFLINE';
+  isGst: boolean;
+  billDate: string;
+  items: CartItem[];
+  discountType: 'PERCENT' | 'FIXED';
+  discountValue: number;
+  discountAmount: number;
+  gstPercentage: number;
+  gstAmount: number;
+  deliveryFee: number;
+  grandTotal: number;
+  cashReceived: number;
+  splitCash?: number;
+  splitGpay?: number;
+  paymentMode: PaymentMode;
+};
+
+// SQL statements that create an order and its line items. Run them together with
+// sql.transaction so the whole write is a single round trip to the database.
+function buildOrderStatements(payload: OrderPayload, customerId: string) {
+  // Subtotal is GST-exclusive (sum of line prices × qty).
+  // grand_total = subtotal - discount + gst + delivery  (GST is added on top).
+  const subtotalExclusive =
+    payload.grandTotal + payload.discountAmount - payload.deliveryFee - payload.gstAmount;
+
+  return [
+    sql`
+      INSERT INTO orders (
+        id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
+        discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
+        cash_received, split_cash, split_gpay, payment_mode, bill_date, created_at
+      ) VALUES (
+        ${payload.orderId}, ${customerId}, ${payload.source}, 'COMPLETED', ${payload.isGst},
+        ${subtotalExclusive},
+        ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
+        ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
+        ${payload.grandTotal}, ${payload.cashReceived},
+        ${payload.splitCash ?? 0}, ${payload.splitGpay ?? 0},
+        ${payload.paymentMode}, ${payload.billDate}, now()
+      )
+    `,
+    // Each cart line becomes one order item, snapshotting its name and price.
+    ...payload.items.map(
+      (item) => sql`
+        INSERT INTO order_items (
+          id, order_id, product_id, snapshot_name, snapshot_price, quantity
+        ) VALUES (
+          ${uid()}, ${payload.orderId}, ${item.product_id ?? null},
+          ${item.name}, ${item.price}, ${item.qty}
+        )
+      `,
+    ),
+  ];
+}
+
 export const dbStore = {
   // CATEGORIES
   async listCategories(): Promise<Category[]> {
@@ -152,15 +213,16 @@ export const dbStore = {
   },
 
   async getOrderWithRelations(id: string): Promise<OrderWithRelations | null> {
-    const orders = await sql`
-      SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
-      FROM orders o
-      JOIN customers c ON c.id = o.customer_id
-      WHERE o.id = ${id}
-    `;
+    const [orders, items] = await Promise.all([
+      sql`
+        SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
+        FROM orders o
+        JOIN customers c ON c.id = o.customer_id
+        WHERE o.id = ${id}
+      `,
+      sql`SELECT * FROM order_items WHERE order_id = ${id}`,
+    ]);
     if (orders.length === 0) return null;
-
-    const items = await sql`SELECT * FROM order_items WHERE order_id = ${id}`;
 
     return {
       ...(orders[0] as any),
@@ -224,79 +286,15 @@ export const dbStore = {
   },
 
   // ORDER SUBMISSION
-  async submitOrder(payload: {
-    orderId: string;
-    customerName: string;
-    customerPhone: string;
-    customerAddress?: string | null;
-    source: 'ONLINE' | 'OFFLINE';
-    isGst: boolean;
-    billDate: string;
-    items: CartItem[];
-    discountType: 'PERCENT' | 'FIXED';
-    discountValue: number;
-    discountAmount: number;
-    gstPercentage: number;
-    gstAmount: number;
-    deliveryFee: number;
-    grandTotal: number;
-    cashReceived: number;
-    splitCash?: number;
-    splitGpay?: number;
-    paymentMode: PaymentMode;
-  }): Promise<{ orderId: string }> {
-    // Neon HTTP doesn't natively support full interactive transactions in the simple
-    // API, so we run statements sequentially/concurrently which is fine at this scale.
-
+  async submitOrder(payload: OrderPayload): Promise<{ orderId: string }> {
     const customer = await this.upsertCustomer(
       payload.customerName,
       payload.customerPhone,
       payload.customerAddress,
     );
 
-    // Each cart line becomes one order item, snapshotting its name and price.
-    const finalOrderItems: Omit<OrderItemRow, 'id'>[] = payload.items.map((item) => ({
-      order_id: payload.orderId,
-      product_id: item.product_id ?? null,
-      snapshot_name: item.name,
-      snapshot_price: item.price,
-      quantity: item.qty,
-    }));
-
-    // Subtotal is GST-exclusive (sum of line prices × qty).
-    // grand_total = subtotal - discount + gst + delivery  (GST is added on top).
-    const subtotalExclusive =
-      payload.grandTotal + payload.discountAmount - payload.deliveryFee - payload.gstAmount;
-
-    await sql`
-      INSERT INTO orders (
-        id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
-        discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
-        cash_received, split_cash, split_gpay, payment_mode, bill_date, created_at
-      ) VALUES (
-        ${payload.orderId}, ${customer.id}, ${payload.source}, 'COMPLETED', ${payload.isGst},
-        ${subtotalExclusive},
-        ${payload.discountType}, ${payload.discountValue}, ${payload.discountAmount},
-        ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
-        ${payload.grandTotal}, ${payload.cashReceived},
-        ${payload.splitCash ?? 0}, ${payload.splitGpay ?? 0},
-        ${payload.paymentMode}, ${payload.billDate}, now()
-      )
-    `;
-
-    // Insert order items now that the order row exists.
-    await Promise.all(
-      finalOrderItems.map((oi) =>
-        sql`
-          INSERT INTO order_items (
-            id, order_id, product_id, snapshot_name, snapshot_price, quantity
-          ) VALUES (
-            ${uid()}, ${oi.order_id}, ${oi.product_id},
-            ${oi.snapshot_name}, ${oi.snapshot_price}, ${oi.quantity}
-          )
-        `
-      ),
-    );
+    // Order + items go in one round trip, atomically.
+    await sql.transaction(buildOrderStatements(payload, customer.id));
 
     return { orderId: payload.orderId };
   },
@@ -324,14 +322,16 @@ export const dbStore = {
   },
 
   async getAdvanceOrder(id: string): Promise<AdvanceOrderWithRelations | null> {
-    const rows = await sql`
-      SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
-      FROM advance_orders a
-      JOIN customers c ON c.id = a.customer_id
-      WHERE a.id = ${id}
-    `;
+    const [rows, items] = await Promise.all([
+      sql`
+        SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+        FROM advance_orders a
+        JOIN customers c ON c.id = a.customer_id
+        WHERE a.id = ${id}
+      `,
+      sql`SELECT * FROM advance_order_items WHERE advance_order_id = ${id}`,
+    ]);
     if (rows.length === 0) return null;
-    const items = await sql`SELECT * FROM advance_order_items WHERE advance_order_id = ${id}`;
     return { ...(rows[0] as any), items: items as AdvanceOrderItemRow[] } as AdvanceOrderWithRelations;
   },
 
@@ -365,20 +365,20 @@ export const dbStore = {
       payload.customerAddress,
     );
 
-    await sql`
-      INSERT INTO advance_orders (
-        id, customer_id, status, subtotal, total_amount, deposit_amount,
-        deposit_payment_mode, delivery_date, notes
-      ) VALUES (
-        ${payload.advanceOrderId}, ${customer.id}, 'PENDING',
-        ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
-        ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes}
-      )
-    `;
-
-    await Promise.all(
-      payload.items.map((it) =>
-        sql`
+    // Advance order + items in one atomic round trip.
+    await sql.transaction([
+      sql`
+        INSERT INTO advance_orders (
+          id, customer_id, status, subtotal, total_amount, deposit_amount,
+          deposit_payment_mode, delivery_date, notes
+        ) VALUES (
+          ${payload.advanceOrderId}, ${customer.id}, 'PENDING',
+          ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
+          ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes}
+        )
+      `,
+      ...payload.items.map(
+        (it) => sql`
           INSERT INTO advance_order_items (
             id, advance_order_id, product_id, snapshot_name, snapshot_desc, snapshot_price, quantity
           ) VALUES (
@@ -387,7 +387,7 @@ export const dbStore = {
           )
         `,
       ),
-    );
+    ]);
 
     return { advanceOrderId: payload.advanceOrderId };
   },
@@ -439,36 +439,52 @@ export const dbStore = {
 
     // Grand total math mirrors POSBilling.completeSale (GST added on top of the net amount).
     const rawSubtotal = cart.reduce((acc, i) => acc + i.price * i.qty, 0);
-    const netExclusive = Math.max(0, rawSubtotal - payload.discountAmount);
+
+    // A discount given at booking isn't stored separately: it's the gap between the
+    // advance's subtotal and its (discounted) total_amount, which the deposit/balance
+    // were based on. Carry it onto the invoice, on top of any discount given now.
+    const bookingDiscount = Math.max(0, Number(advance.subtotal) - Number(advance.total_amount));
+    const discountAmount = payload.discountAmount + bookingDiscount;
+    const discountType = bookingDiscount > 0 ? 'FIXED' : payload.discountType;
+    const discountValue = bookingDiscount > 0 ? discountAmount : payload.discountValue;
+
+    const netExclusive = Math.max(0, rawSubtotal - discountAmount);
     const gstAmount = payload.isGst ? calcGst(netExclusive, payload.gstPercentage) : 0;
     const grandTotal = netExclusive + gstAmount + payload.deliveryFee;
 
-    const { orderId } = await this.submitOrder({
-      orderId: payload.invoiceId,
-      customerName: advance.customer_name,
-      customerPhone: advance.customer_phone,
-      customerAddress: advance.customer_address,
-      source: 'OFFLINE',
-      isGst: payload.isGst,
-      billDate: payload.billDate,
-      items: cart,
-      discountType: payload.discountType,
-      discountValue: payload.discountValue,
-      discountAmount: payload.discountAmount,
-      gstPercentage: payload.isGst ? payload.gstPercentage : 0,
-      gstAmount,
-      deliveryFee: payload.deliveryFee,
-      grandTotal,
-      cashReceived: grandTotal,
-      paymentMode: payload.paymentMode,
-    });
+    // Create the invoice and mark the advance order completed in one atomic round
+    // trip. The customer already exists, so there's no need to upsert them again.
+    await sql.transaction([
+      ...buildOrderStatements(
+        {
+          orderId: payload.invoiceId,
+          customerName: advance.customer_name,
+          customerPhone: advance.customer_phone,
+          customerAddress: advance.customer_address,
+          source: 'OFFLINE',
+          isGst: payload.isGst,
+          billDate: payload.billDate,
+          items: cart,
+          discountType,
+          discountValue,
+          discountAmount,
+          gstPercentage: payload.isGst ? payload.gstPercentage : 0,
+          gstAmount,
+          deliveryFee: payload.deliveryFee,
+          grandTotal,
+          cashReceived: grandTotal,
+          paymentMode: payload.paymentMode,
+        },
+        advance.customer_id,
+      ),
+      sql`
+        UPDATE advance_orders
+        SET status = 'COMPLETED', finalized_order_id = ${payload.invoiceId}, finalized_at = now()
+        WHERE id = ${payload.advanceOrderId}
+      `,
+    ]);
 
-    await sql`
-      UPDATE advance_orders
-      SET status = 'COMPLETED', finalized_order_id = ${orderId}, finalized_at = now()
-      WHERE id = ${payload.advanceOrderId}
-    `;
-
+    const orderId = payload.invoiceId;
     return { orderId };
   },
 };
