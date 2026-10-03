@@ -5094,6 +5094,14 @@ export default function POSBilling() {
                                     </svg>
                                   </button>
                                   <button
+                                    onClick={() => setPrintModalData({ id: order.id, type: "invoice" })}
+                                    title="Print Receipt"
+                                    aria-label="Print Receipt"
+                                    className="flex items-center justify-center w-8 h-8 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-md transition-colors cursor-pointer"
+                                  >
+                                    <Printer className="w-4 h-4" />
+                                  </button>
+                                  <button
                                     onClick={() => setActiveInvoiceId(order.id)}
                                     title="View invoice"
                                     aria-label="View invoice"

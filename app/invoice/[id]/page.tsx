@@ -3,6 +3,7 @@ import { isGstExclusive } from "@/lib/gst";
 import { ArrowLeft, FileText } from "lucide-react";
 import Link from "next/link";
 import { InvoiceActions } from "./InvoiceActions";
+import ThermalPageSize from "@/app/components/ThermalPageSize";
 
 // Clean Indian Number-to-Words Converter
 function numberToWords(num: number): string {
@@ -180,7 +181,15 @@ export default async function InvoicePage({
       <style>{`
         @media print {
           @page {
-            ${paper !== "thermal" ? `size: ${size === "a5" ? "A5 portrait" : "A4 portrait"};` : ""}
+            size: ${
+              paper === "thermal"
+                ? size === "58"
+                  ? "58mm 297mm"
+                  : "80mm 297mm"
+                : size === "a5"
+                  ? "A5 portrait"
+                  : "A4 portrait"
+            };
             margin: ${paper === "thermal" ? "0mm" : size === "a5" ? "10mm" : "12mm"};
           }
           html, body {
@@ -199,7 +208,7 @@ export default async function InvoicePage({
             box-shadow: none !important;
             max-width: 100% !important;
             width: 100% !important;
-            padding: 0 !important;
+            padding: ${paper === "thermal" ? (size === "58" ? "3mm 5mm" : "3mm 4mm") : "0"} !important;
           }
         }
       `}</style>
@@ -218,8 +227,10 @@ export default async function InvoicePage({
         </div>
       )}
 
+      {paper === "thermal" && <ThermalPageSize widthMm={size === "58" ? 58 : 80} />}
+
       {paper === "thermal" ? (
-        <div className={`invoice-sheet bg-white text-black font-mono leading-tight p-3 sm:mx-auto print:mx-0 print:ml-0 print:mt-0 print:w-full print:max-w-full ${size === "58" ? "w-[260px]" : "w-[320px]"}`} style={{ width: paper === "thermal" ? (size === "58" ? "58mm" : "80mm") : undefined }}>
+        <div className={`invoice-sheet bg-white text-black font-mono leading-tight sm:mx-auto print:mx-0 print:ml-0 print:mt-0 print:w-full print:max-w-full ${size === "58" ? "w-[260px]" : "w-[320px]"}`} style={{ width: size === "58" ? "58mm" : "80mm", padding: size === "58" ? "3mm 5mm" : "3mm 4mm" }}>
           {/* Thermal Receipt Layout */}
           <div className="text-center pb-3 border-b border-dashed border-black/40 mb-3">
             <h1 className="text-xl font-bold tracking-tight">SS CREATIVES</h1>

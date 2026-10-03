@@ -2,6 +2,7 @@ import { dbStore } from "@/lib/dbStore";
 import { ArrowLeft, FileText } from "lucide-react";
 import Link from "next/link";
 import { AdvanceReceiptActions } from "./AdvanceReceiptActions";
+import ThermalPageSize from "@/app/components/ThermalPageSize";
 
 export default async function AdvanceReceiptPage({
   params,
@@ -14,6 +15,8 @@ export default async function AdvanceReceiptPage({
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const isEmbed = resolvedSearchParams.embed === "true";
   const autoPrint = resolvedSearchParams.print === "true";
+  const paper = resolvedSearchParams.paper || "a4";
+  const size = resolvedSearchParams.size || "a4";
 
   const advance = await dbStore.getAdvanceOrder(id);
 
@@ -75,7 +78,18 @@ export default async function AdvanceReceiptPage({
     >
       <style>{`
         @media print {
-          @page { size: A4 portrait; margin: 12mm 10mm; }
+          @page {
+            size: ${
+              paper === "thermal"
+                ? size === "58"
+                  ? "58mm 297mm"
+                  : "80mm 297mm"
+                : size === "a5"
+                  ? "A5 portrait"
+                  : "A4 portrait"
+            };
+            margin: ${paper === "thermal" ? "0mm" : size === "a5" ? "10mm" : "12mm"};
+          }
           html, body {
             background: #ffffff !important;
             color: #000000 !important;
@@ -90,7 +104,7 @@ export default async function AdvanceReceiptPage({
             box-shadow: none !important;
             max-width: 100% !important;
             width: 100% !important;
-            padding: 0 !important;
+            padding: ${paper === "thermal" ? (size === "58" ? "3mm 5mm" : "3mm 4mm") : "0"} !important;
           }
         }
       `}</style>
@@ -109,6 +123,85 @@ export default async function AdvanceReceiptPage({
         </div>
       )}
 
+      {paper === "thermal" && <ThermalPageSize widthMm={size === "58" ? 58 : 80} />}
+
+      {paper === "thermal" ? (
+        <div className={`invoice-sheet bg-white text-black font-mono leading-tight sm:mx-auto print:mx-0 print:ml-0 print:mt-0 print:w-full print:max-w-full ${size === "58" ? "w-[260px]" : "w-[320px]"}`} style={{ width: size === "58" ? "58mm" : "80mm", padding: size === "58" ? "3mm 5mm" : "3mm 4mm" }}>
+          {/* Thermal Advance Receipt Layout */}
+          <div className="text-center pb-3 border-b border-dashed border-black/40 mb-3">
+            <h1 className="text-xl font-bold tracking-tight">SS CREATIVES</h1>
+            <p className="text-[11px] mt-1">55/6, Melaratha Veethi</p>
+            <p className="text-[11px]">Tiruchendur, TN - 628215</p>
+            <p className="text-[11px]">Ph: +91 88072 99918</p>
+          </div>
+          <div className="text-[11px] pb-3 border-b border-dashed border-black/40 mb-3 space-y-1">
+            <div className="flex justify-between">
+              <span className="font-bold uppercase">ADVANCE RECEIPT</span>
+              <span>#{advance.id}</span>
+            </div>
+            <div className="flex justify-between">
+              <span>Date:</span>
+              <span>{formattedDate}</span>
+            </div>
+            {deliveryDate && (
+              <div className="flex justify-between text-[#B45309] font-bold">
+                <span>Due:</span>
+                <span>{deliveryDate}</span>
+              </div>
+            )}
+            <div className="flex justify-between">
+              <span>Customer:</span>
+              <span className="font-semibold text-right">{advance.customer_name || "Counter Sale"}</span>
+            </div>
+          </div>
+          <div className="text-[11px] w-full">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-dashed border-black/40">
+                  <th className="py-1 font-bold">Item</th>
+                  <th className="py-1 font-bold text-center">Qty</th>
+                  <th className="py-1 font-bold text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="align-top">
+                {advance.items.map((item, idx) => (
+                  <tr key={idx}>
+                    <td className="py-1 pr-1">{item.snapshot_name}</td>
+                    <td className="py-1 text-center">{item.quantity}</td>
+                    <td className="py-1 text-right">
+                      {(Number(item.snapshot_price) * Number(item.quantity)).toLocaleString(undefined, {
+                        minimumFractionDigits: 2,
+                      })}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-3 border-t border-dashed border-black/40 pt-2 space-y-1 text-[11px]">
+            <div className="flex justify-between">
+              <span>Subtotal:</span>
+              <span>{totalNum.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+            <div className="flex justify-between font-bold text-[12px] mt-1 pt-1 border-t border-black/10">
+              <span>TOTAL AMT:</span>
+              <span>₹{totalNum.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+            <div className="flex justify-between mt-1 text-[#166534] font-bold border-b border-dashed border-black/40 pb-2">
+              <span>ADVANCE PAID:</span>
+              <span>₹{depositNum.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+            <div className="flex justify-between mt-1 text-[#991B1B] font-bold text-[13px] pt-1">
+              <span>BALANCE DUE:</span>
+              <span>₹{balanceNum.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+          <div className="mt-5 text-center text-[10px] space-y-1">
+            <p className="font-bold italic">Thank you for your business!</p>
+            <p className="text-[9px]">Balance due upon delivery/pickup.</p>
+          </div>
+        </div>
+      ) : (
       <div className="invoice-sheet w-full max-w-[760px] bg-white border border-zinc-200/80 shadow-xs rounded-sm p-6 sm:p-12 text-zinc-900 print:border-none print:shadow-none print:p-0 print:rounded-none">
         {/* Header */}
         <div className="flex flex-col sm:flex-row justify-between items-start gap-6 pb-6 border-b border-zinc-200">
@@ -278,6 +371,7 @@ export default async function AdvanceReceiptPage({
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
