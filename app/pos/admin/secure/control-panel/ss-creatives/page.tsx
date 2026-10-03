@@ -102,6 +102,11 @@ const ORDER_PAYMENT_MODES = ["CASH", "GPAY"] as const;
 const POS_PAYMENT_MODES = ["CASH", "GPAY", "SPLIT"] as const;
 type OrderPaymentMode = "CASH" | "GPAY" | "SPLIT";
 
+// YYYY-MM-DD in the device's local time zone (IST at the counter). Don't use
+// toISOString() for this: it gives the UTC date, which is still yesterday until 5:30 AM IST.
+const localDateStr = (d: Date = new Date()) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
 // Shared date-window test reused by the Expenses tab and the analytics dashboard.
 type PeriodKey = "all" | "today" | "week" | "month" | "year" | "custom";
 const isDateInPeriod = (
@@ -382,12 +387,17 @@ export default function POSBilling() {
     "billing" | "orders" | "analytics" | "inventory" | "expenses" | "advance"
   >("billing");
   const [isOnline, setIsOnline] = useState(false);
+  // Changes at midnight so "today" figures don't stay stuck on yesterday.
+  const [todayKey, setTodayKey] = useState(() => localDateStr());
+  useEffect(() => {
+    const timer = setInterval(() => setTodayKey(localDateStr()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
-  const [customOrderDate, setCustomOrderDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
-  );
+  // Empty = bill at the current time; set only when a past date is picked.
+  const [customOrderDate, setCustomOrderDate] = useState<string>("");
   const [items, setItems] = useState<OrderItem[]>([
     { id: "1", name: "", desc: "", price: 0, qty: 1 },
   ]);
@@ -444,10 +454,10 @@ export default function POSBilling() {
     "all" | "today" | "week" | "month" | "year" | "custom"
   >("all");
   const [analyticsStartDate, setAnalyticsStartDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [analyticsEndDate, setAnalyticsEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [analyticsSubTab, setAnalyticsSubTab] = useState<
     "revenue" | "today" | "products" | "coupons"
@@ -494,7 +504,7 @@ export default function POSBilling() {
   const [expPaymentMode, setExpPaymentMode] = useState<string>("CASH");
   const [expNotes, setExpNotes] = useState("");
   const [expDate, setExpDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [isSavingExpense, setIsSavingExpense] = useState(false);
   const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
@@ -502,10 +512,10 @@ export default function POSBilling() {
     "all" | "today" | "week" | "month" | "year" | "custom"
   >("month");
   const [expenseStartDate, setExpenseStartDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [expenseEndDate, setExpenseEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [expenseCategoryFilter, setExpenseCategoryFilter] = useState<string>("ALL");
   const [expenseSearch, setExpenseSearch] = useState("");
@@ -759,20 +769,20 @@ export default function POSBilling() {
     "all" | "today" | "week" | "month" | "year" | "custom"
   >("all");
   const [historyStartDate, setHistoryStartDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [historyEndDate, setHistoryEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
 
   const [advPeriod, setAdvPeriod] = useState<
     "all" | "today" | "week" | "month" | "year" | "custom"
   >("all");
   const [advStartDate, setAdvStartDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
   const [advEndDate, setAdvEndDate] = useState<string>(
-    new Date().toISOString().split("T")[0],
+    localDateStr(),
   );
 
   const [selectedCoupon, setSelectedCoupon] = useState<string>("none");
@@ -1519,7 +1529,7 @@ export default function POSBilling() {
       setCustomerName("");
       setCustomerPhone("");
       setCustomerAddress("");
-      setCustomOrderDate(new Date().toISOString().split("T")[0]);
+      setCustomOrderDate("");
       setItems([{ id: "1", name: "", desc: "", price: 0, qty: 1 }]);
       setDiscountValue(0);
       setDeliveryFee(0);
@@ -1686,9 +1696,7 @@ export default function POSBilling() {
     setExpAmount(Number(e.amount) || "");
     // Use the local calendar date (same as the log displays), not the UTC slice.
     const d = new Date(e.expense_date);
-    setExpDate(
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
-    );
+    setExpDate(localDateStr(d));
     if ((expenseCategories as readonly string[]).includes(e.category)) {
       setExpCategory(e.category);
       setExpCustomCategory("");
@@ -2249,6 +2257,7 @@ export default function POSBilling() {
     analyticsStartDate,
     analyticsEndDate,
     analyticsGstFilter,
+    todayKey,
   ]);
 
   // Inventory-derived data (pure catalog — stock tracking removed).
@@ -2561,7 +2570,7 @@ export default function POSBilling() {
     link.setAttribute("href", url);
     link.setAttribute(
       "download",
-      `Order_History_${historyPeriod}_${new Date().toISOString().split("T")[0]}.csv`,
+      `Order_History_${historyPeriod}_${localDateStr()}.csv`,
     );
     link.style.visibility = "hidden";
     document.body.appendChild(link);
@@ -2604,7 +2613,7 @@ export default function POSBilling() {
     link.setAttribute("href", url);
     link.setAttribute(
       "download",
-      `Inventory_${new Date().toISOString().split("T")[0]}.csv`,
+      `Inventory_${localDateStr()}.csv`,
     );
     link.style.visibility = "hidden";
     document.body.appendChild(link);
@@ -3502,10 +3511,12 @@ export default function POSBilling() {
                         </label>
                         <input
                           type="date"
-                          max={new Date().toISOString().split("T")[0]}
+                          max={localDateStr()}
                           className="w-full bg-[#FFFFFF]/40 border border-black/10 hover:border-black/10 focus:border-[#35617C] focus:bg-white rounded-lg px-4 py-2.5 text-[#000000] text-sm font-bold focus:outline-none transition-colors cursor-pointer shadow-sm"
-                          value={customOrderDate}
-                          onChange={(e) => setCustomOrderDate(e.target.value)}
+                          value={customOrderDate || localDateStr()}
+                          onChange={(e) =>
+                            setCustomOrderDate(e.target.value === localDateStr() ? "" : e.target.value)
+                          }
                         />
                       </div>
                     </div>
