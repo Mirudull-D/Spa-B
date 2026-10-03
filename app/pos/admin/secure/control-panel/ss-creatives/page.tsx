@@ -49,6 +49,7 @@ import {
   Loader2,
   Clock,
   MessageSquare,
+  Settings,
 } from "lucide-react";
 import {
   verifyPasscode,
@@ -79,7 +80,7 @@ import { Product, Expense, Category, AdvanceOrderWithRelations, AdvanceOrderStat
 import { calcGst, isGstExclusive, netSales } from "@/lib/gst";
 
 // Preset expense categories (users can also type a custom one)
-const EXPENSE_CATEGORIES = [
+const DEFAULT_EXPENSE_CATEGORIES = [
   "Stock Purchase",
   "Rent",
   "Salaries",
@@ -90,7 +91,7 @@ const EXPENSE_CATEGORIES = [
   "Repairs & Maintenance",
   "Taxes & Fees",
   "Miscellaneous",
-] as const;
+];
 
 const EXPENSE_PAYMENT_MODES = ["CASH", "UPI", "CARD", "BANK", "OTHER"] as const;
 
@@ -461,8 +462,33 @@ export default function POSBilling() {
 
   // Expense tracker state
   const [expenses, setExpenses] = useState<Expense[]>([]);
+  const [expenseCategories, setExpenseCategories] = useState<string[]>(DEFAULT_EXPENSE_CATEGORIES);
+  const [showManageExpCatsModal, setShowManageExpCatsModal] = useState(false);
+  const [newExpCatName, setNewExpCatName] = useState("");
+
+  const handleAddExpenseCategory = () => {
+    const trimmed = newExpCatName.trim();
+    if (trimmed && !expenseCategories.includes(trimmed)) {
+      const newCats = [...expenseCategories, trimmed];
+      setExpenseCategories(newCats);
+      localStorage.setItem("pos_expense_categories", JSON.stringify(newCats));
+      setNewExpCatName("");
+    }
+  };
+
+  const handleDeleteExpenseCategory = (cat: string) => {
+    if (confirm(`Delete expense category "${cat}"?`)) {
+      const newCats = expenseCategories.filter((c) => c !== cat);
+      setExpenseCategories(newCats);
+      localStorage.setItem("pos_expense_categories", JSON.stringify(newCats));
+      if (expCategory === cat) {
+        setExpCategory(newCats[0] || "__custom__");
+      }
+    }
+  };
+
   const [expTitle, setExpTitle] = useState("");
-  const [expCategory, setExpCategory] = useState<string>(EXPENSE_CATEGORIES[0]);
+  const [expCategory, setExpCategory] = useState<string>(DEFAULT_EXPENSE_CATEGORIES[0]);
   const [expCustomCategory, setExpCustomCategory] = useState("");
   const [expAmount, setExpAmount] = useState<number | "">("");
   const [expPaymentMode, setExpPaymentMode] = useState<string>("CASH");
@@ -512,6 +538,17 @@ export default function POSBilling() {
   }, [activeTab, analyticsSubTab, analyticsGstFilter]);
 
   useEffect(() => {
+    const storedExpCats = localStorage.getItem("pos_expense_categories");
+    if (storedExpCats) {
+      try {
+        const parsed = JSON.parse(storedExpCats);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          setExpenseCategories(parsed);
+          setExpCategory(parsed[0]);
+        }
+      } catch (e) {}
+    }
+
     const prefs = localStorage.getItem("shalistone_print_prefs");
     if (prefs) {
       try {
@@ -1025,9 +1062,9 @@ export default function POSBilling() {
   const netExclusive = Math.max(0, subtotal - calculatedDiscount);
   const gstAmount = applyGST ? calcGst(netExclusive, gstPercentage) : 0;
   const grandTotal = netExclusive + gstAmount + deliveryFee;
-  // Advance orders are booked at the discounted price (pre-GST). The discount is
+  // Advance orders are booked at the grand total amount. The discount is
   // recoverable later as `subtotal - total_amount` and lands on the final invoice.
-  const advanceBookingTotal = netExclusive + deliveryFee;
+  const advanceBookingTotal = grandTotal;
 
   // Suggest a GST % from the products currently in the cart (their per-product
   // default rate). Used to pre-fill the changeable GST field when a GST invoice
@@ -1111,12 +1148,12 @@ export default function POSBilling() {
         customerName: customerName || "Guest",
         customerPhone,
         customerAddress: customerAddress || null,
-        subtotal,
+        subtotal: subtotal + (applyGST ? gstAmount : 0) + deliveryFee,
         totalAmount: advanceTotal,
         depositAmount: deposit,
         depositPaymentMode: advDepositPaymentMode,
         deliveryDate: advDeliveryDate || null,
-        notes: advNotes.trim() || null,
+        notes: ((applyGST ? `[GST:${gstPercentage}%] ` : "") + advNotes.trim()) || null,
         items: items.map((i) => ({
           product_id: i.product_id || null,
           snapshot_name: i.name,
@@ -1167,8 +1204,16 @@ export default function POSBilling() {
     setReceiveDiscountType("FIXED");
     setReceiveDiscountValue("");
     setReceivePaymentMode("CASH");
-    setReceiveIsGst(false);
-    setReceiveGstPct(18);
+    
+    const notesStr = adv.notes || "";
+    const gstMatch = notesStr.match(/\[GST:(\d+)%\]/);
+    if (gstMatch) {
+      setReceiveIsGst(true);
+      setReceiveGstPct(Number(gstMatch[1]));
+    } else {
+      setReceiveIsGst(false);
+      setReceiveGstPct(18);
+    }
   };
 
   const openAdvanceView = (adv: AdvanceOrderWithRelations) => {
@@ -1644,7 +1689,7 @@ export default function POSBilling() {
     setExpDate(
       `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
     );
-    if ((EXPENSE_CATEGORIES as readonly string[]).includes(e.category)) {
+    if ((expenseCategories as readonly string[]).includes(e.category)) {
       setExpCategory(e.category);
       setExpCustomCategory("");
     } else {
@@ -2569,6 +2614,68 @@ export default function POSBilling() {
 
   return (
     <div className="min-h-screen bg-[#FFFFFF] text-[#000000] flex flex-row font-sans overflow-hidden">
+      {/* Expense Category Management Modal */}
+      {showManageExpCatsModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-[0_20px_60px_rgba(0,0,0,0.3)] border border-black/10 w-full max-w-md overflow-hidden transform animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between p-5 border-b border-black/10">
+              <div className="flex items-center gap-2">
+                <Settings className="w-5 h-5 text-[#35617C]" />
+                <div>
+                  <h3 className="text-base font-black text-black tracking-tight">
+                    Manage Expense Categories
+                  </h3>
+                  <p className="text-[11px] text-black/60 font-semibold mt-0.5">
+                    Add or remove categories
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowManageExpCatsModal(false)}
+                className="w-8 h-8 flex items-center justify-center bg-black/5 hover:bg-black/10 rounded-full transition-colors"
+              >
+                <X className="w-4 h-4 text-black" />
+              </button>
+            </div>
+            <div className="p-5">
+              <div className="flex gap-2 mb-4">
+                <input
+                  type="text"
+                  placeholder="New category name"
+                  className="flex-1 bg-[#FAFAFA] border border-black/10 rounded-lg px-3 py-2 text-sm text-black focus:outline-none focus:border-[#35617C]"
+                  value={newExpCatName}
+                  onChange={(e) => setNewExpCatName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddExpenseCategory();
+                  }}
+                />
+                <button
+                  onClick={handleAddExpenseCategory}
+                  disabled={!newExpCatName.trim()}
+                  className="bg-[#35617C] text-white px-4 rounded-lg text-xs font-bold disabled:opacity-50"
+                >
+                  Add
+                </button>
+              </div>
+              <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                {expenseCategories.map((cat) => (
+                  <div key={cat} className="flex justify-between items-center p-3 border border-black/10 rounded-lg bg-[#FAFAFA]">
+                    <span className="text-sm font-semibold">{cat}</span>
+                    <button
+                      onClick={() => handleDeleteExpenseCategory(cat)}
+                      className="text-red-500 hover:text-red-700 hover:bg-red-50 p-1.5 rounded-lg transition-colors"
+                      title="Delete Category"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Category Management Modal */}
       {showCategoryModal && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[110] flex items-center justify-center p-4">
@@ -4284,7 +4391,7 @@ export default function POSBilling() {
                 )}
                 {selectedAdvance.notes && (
                   <div className="bg-[#FEF9C3] border border-[#EAB308]/30 rounded-lg p-2.5 text-[11px] text-[#78350F]">
-                    <span className="font-bold">Notes: </span>{selectedAdvance.notes}
+                    <span className="font-bold">Notes: </span>{selectedAdvance.notes.replace(/\[GST:\d+%\]\s*/g, "")}
                   </div>
                 )}
 
@@ -4341,6 +4448,30 @@ export default function POSBilling() {
                           className="flex-1 bg-white border border-black/15 focus:border-[#35617C] rounded-lg px-3 py-2 text-sm font-bold focus:outline-none"
                           placeholder="0"
                         />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-[#000000] uppercase tracking-wider mb-1.5">Invoice Type</label>
+                      <div className="flex bg-[#F1F5F9] rounded-lg p-1">
+                        <button
+                          type="button"
+                          onClick={() => setReceiveIsGst(false)}
+                          className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-colors ${
+                            !receiveIsGst ? "bg-white text-black shadow-sm" : "text-[#000000]/60 hover:text-black"
+                          }`}
+                        >
+                          NON-GST BILL
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReceiveIsGst(true)}
+                          className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-colors ${
+                            receiveIsGst ? "bg-[#35617C] text-white shadow-sm" : "text-[#000000]/60 hover:text-black"
+                          }`}
+                        >
+                          GST INVOICE
+                        </button>
                       </div>
                     </div>
 
@@ -6480,15 +6611,24 @@ export default function POSBilling() {
                     </div>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#000000] mb-1">
-                      Category
-                    </label>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="block text-[10px] font-bold uppercase tracking-wider text-[#000000]">
+                        Category
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowManageExpCatsModal(true)}
+                        className="text-[10px] font-bold text-[#35617C] hover:underline uppercase tracking-wider flex items-center gap-1"
+                      >
+                        <Settings className="w-3 h-3" /> Manage
+                      </button>
+                    </div>
                     <select
                       value={expCategory}
                       onChange={(e) => setExpCategory(e.target.value)}
                       className="w-full bg-[#FAFAFA] border border-black/10 rounded-lg px-3 py-2 text-sm text-[#000000] focus:outline-none focus:border-[#35617C] cursor-pointer"
                     >
-                      {EXPENSE_CATEGORIES.map((c) => (
+                      {expenseCategories.map((c) => (
                         <option key={c} value={c}>
                           {c}
                         </option>

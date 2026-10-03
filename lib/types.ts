@@ -28,6 +28,7 @@ export type PaymentMode = 'CASH' | 'GPAY' | 'SPLIT';
 export type OrderRow = {
   id: string;
   customer_id: string;
+  customer_name_snapshot: string | null;
   source: 'ONLINE' | 'OFFLINE';
   status: 'COMPLETED' | 'PENDING';
   is_gst: boolean; // true = GST invoice, false = non-GST bill
@@ -79,6 +80,7 @@ export type AdvanceOrderStatus = 'PENDING' | 'READY' | 'COMPLETED' | 'CANCELLED'
 export type AdvanceOrderRow = {
   id: string;
   customer_id: string;
+  customer_name_snapshot: string | null;
   status: AdvanceOrderStatus;
   subtotal: number;
   total_amount: number;

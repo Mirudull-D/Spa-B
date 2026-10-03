@@ -60,7 +60,8 @@ function buildOrderStatements(payload: OrderPayload, customerId: string) {
       INSERT INTO orders (
         id, customer_id, source, status, is_gst, subtotal, discount_type, discount_value,
         discount_amount, gst_percentage, gst_amount, delivery_fee, grand_total,
-        cash_received, split_cash, split_gpay, payment_mode, bill_date, created_at
+        cash_received, split_cash, split_gpay, payment_mode, bill_date, created_at,
+        customer_name_snapshot
       ) VALUES (
         ${payload.orderId}, ${customerId}, ${payload.source}, 'COMPLETED', ${payload.isGst},
         ${subtotalExclusive},
@@ -68,7 +69,8 @@ function buildOrderStatements(payload: OrderPayload, customerId: string) {
         ${payload.gstPercentage}, ${payload.gstAmount}, ${payload.deliveryFee},
         ${payload.grandTotal}, ${payload.cashReceived},
         ${payload.splitCash ?? 0}, ${payload.splitGpay ?? 0},
-        ${payload.paymentMode}, ${payload.billDate}, now()
+        ${payload.paymentMode}, ${payload.billDate}, now(),
+        ${payload.customerName}
       )
     `,
     // Each cart line becomes one order item, snapshotting its name and price.
@@ -192,7 +194,7 @@ export const dbStore = {
 
   async listOrdersWithRelations(): Promise<OrderWithRelations[]> {
     const orders = await sql`
-      SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
+      SELECT o.*, COALESCE(o.customer_name_snapshot, c.name) as customer_name, c.phone as customer_phone, c.address as customer_address
       FROM orders o
       JOIN customers c ON c.id = o.customer_id
       ORDER BY o.created_at DESC
@@ -215,7 +217,7 @@ export const dbStore = {
   async getOrderWithRelations(id: string): Promise<OrderWithRelations | null> {
     const [orders, items] = await Promise.all([
       sql`
-        SELECT o.*, c.name as customer_name, c.phone as customer_phone, c.address as customer_address
+        SELECT o.*, COALESCE(o.customer_name_snapshot, c.name) as customer_name, c.phone as customer_phone, c.address as customer_address
         FROM orders o
         JOIN customers c ON c.id = o.customer_id
         WHERE o.id = ${id}
@@ -303,7 +305,7 @@ export const dbStore = {
   // balance is collected and finalizeAdvanceOrder turns the hold into an invoice.
   async listAdvanceOrders(): Promise<AdvanceOrderWithRelations[]> {
     const rows = await sql`
-      SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+      SELECT a.*, COALESCE(a.customer_name_snapshot, c.name) AS customer_name, c.phone AS customer_phone, c.address AS customer_address
       FROM advance_orders a
       JOIN customers c ON c.id = a.customer_id
       ORDER BY a.created_at DESC
@@ -324,7 +326,7 @@ export const dbStore = {
   async getAdvanceOrder(id: string): Promise<AdvanceOrderWithRelations | null> {
     const [rows, items] = await Promise.all([
       sql`
-        SELECT a.*, c.name AS customer_name, c.phone AS customer_phone, c.address AS customer_address
+        SELECT a.*, COALESCE(a.customer_name_snapshot, c.name) AS customer_name, c.phone AS customer_phone, c.address AS customer_address
         FROM advance_orders a
         JOIN customers c ON c.id = a.customer_id
         WHERE a.id = ${id}
@@ -370,11 +372,12 @@ export const dbStore = {
       sql`
         INSERT INTO advance_orders (
           id, customer_id, status, subtotal, total_amount, deposit_amount,
-          deposit_payment_mode, delivery_date, notes
+          deposit_payment_mode, delivery_date, notes, customer_name_snapshot
         ) VALUES (
           ${payload.advanceOrderId}, ${customer.id}, 'PENDING',
           ${payload.subtotal}, ${payload.totalAmount}, ${payload.depositAmount},
-          ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes}
+          ${payload.depositPaymentMode}, ${payload.deliveryDate}, ${payload.notes},
+          ${payload.customerName}
         )
       `,
       ...payload.items.map(
